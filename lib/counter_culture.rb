@@ -228,7 +228,7 @@ module CounterCulture
           method = options[:increment] ? :increment_counter : :decrement_counter
 
           # do it!
-          if self.class.reflect_on_association(options[:relation]).options[:polymorphic]
+          if self.class.reflect_on_association(options[:relation][0]).options[:polymorphic]
             foreign_key_type(options[:relation]).send(method, options[:counter_column], id_to_change)
           else
             relation_klass(options[:relation]).send(method, options[:counter_column], id_to_change)
