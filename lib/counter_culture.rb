@@ -228,7 +228,11 @@ module CounterCulture
           method = options[:increment] ? :increment_counter : :decrement_counter
 
           # do it!
-          relation_klass(options[:relation]).send(method, options[:counter_column], id_to_change)
+          if self.class.reflect_on_association(options[:relation]).options[:polymorphic]
+            foreign_key_type(options[:relation]).send(method, options[:counter_column], id_to_change)
+          else
+            relation_klass(options[:relation]).send(method, options[:counter_column], id_to_change)
+          end
         end
       end
     end
@@ -266,7 +270,7 @@ module CounterCulture
     # was: whether to get the current or past value from ActiveRecord;
     #   pass true to get the past value, false or nothing to get the
     #   current value
-    def foreign_key_value(relation, was = false)
+    def foreign_key_relation(relation, was = false)
       relation = relation.is_a?(Enumerable) ? relation.dup : [relation]
       if was
         first = relation.shift
@@ -278,7 +282,15 @@ module CounterCulture
       while !value.nil? && relation.size > 0
         value = value.send(relation.shift)
       end
-      return value.try(:id)
+      return value
+    end
+    
+    def foreign_key_value(relation, was = false)
+      return foreign_key_relation(relation, was).try(:id)
+    end
+
+    def foreign_key_type(relation, was = false)
+      return foreign_key_relation(relation, was).try(:class)
     end
 
     def relation_klass(relation)
