@@ -58,6 +58,10 @@ module CounterCulture
         @after_commit_counter_cache.each do |hash|
           next if options[:exclude] && options[:exclude].include?(hash[:relation])
           next if options[:only] && !options[:only].include?(hash[:relation])
+          
+          if self.reflect_on_association(hash[:relation][0]).options[:polymorphic]
+            raise "Fixing counter caches is not yet supported for polymorphic associations"
+          end
 
           if options[:skip_unsupported]
             next if (hash[:foreign_key_values] || (hash[:counter_cache_name].is_a?(Proc) && !hash[:column_names]))
