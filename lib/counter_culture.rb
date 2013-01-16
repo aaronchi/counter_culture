@@ -13,6 +13,7 @@ module CounterCulture
       # this holds all configuration data
       attr_reader :after_commit_counter_cache
       
+      # adapted from http://stackoverflow.com/questions/2315239/finding-all-by-polymorphic-type-in-rails
       def all_polymorphic_types(name)
         @poly_hash ||= {}.tap do |hash|
           Dir.glob(File.join(Rails.root, "app", "models", "**", "*.rb")).each do |file|
@@ -71,10 +72,6 @@ module CounterCulture
         @after_commit_counter_cache.each do |hash|
           next if options[:exclude] && options[:exclude].include?(hash[:relation])
           next if options[:only] && !options[:only].include?(hash[:relation])
-          
-          # if self.reflect_on_association(hash[:relation][0]).options[:polymorphic]
-          #   raise "Fixing counter caches is not yet supported for polymorphic associations"
-          # end
 
           if options[:skip_unsupported]
             next if (hash[:foreign_key_values] || (hash[:counter_cache_name].is_a?(Proc) && !hash[:column_names]))
