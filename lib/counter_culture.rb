@@ -13,11 +13,11 @@ module CounterCulture
       # this holds all configuration data
       attr_reader :after_commit_counter_cache
       
-      # adapted from http://stackoverflow.com/questions/2315239/finding-all-by-polymorphic-type-in-rails
-      def all_polymorphic_types(name)
+      def all_polymorphic_types_currently(name)
         @poly_hash ||= {}.tap do |hash|
-          Dir.glob(File.join(Rails.root, "app", "models", "**", "*.rb")).each do |file|
-            klass = (File.basename(file, ".rb").camelize.constantize rescue nil)
+          Rails.application.eager_load! unless Rails.configuration.cache_classes
+          ::ActiveRecord::Base.descendants.each do |reflection|
+            klass = (reflection rescue nil)
             next if klass.nil? or !klass.ancestors.include?(::ActiveRecord::Base)
             klass.reflect_on_all_associations(:has_many).select{|r| r.options[:as] }.each do |reflection|
               (hash[reflection.options[:as]] ||= []) << klass
@@ -84,7 +84,8 @@ module CounterCulture
           # column name otherwise
           # which class does this relation ultimately point to? that's where we have to start
           if self.reflect_on_association(hash[:relation][0]).options[:polymorphic]
-            klass = all_polymorphic_types(hash[:relation][0])
+            # klass = all_polymorphic_types(hash[:relation][0])
+            klass = all_polymorphic_types_currently(hash[:relation][0])
             
             klass.each do |kl|
               # we are only interested in the id and the count of related objects (that's this class itself)

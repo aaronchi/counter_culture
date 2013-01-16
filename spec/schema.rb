@@ -11,7 +11,7 @@
 #
 # It's strongly recommended to check this file into your version control system.
 
-ActiveRecord::Schema.define(:version => 20120522160158) do
+ActiveRecord::Schema.define(:version => 20130115125231) do
 
   create_table "companies", :force => true do |t|
     t.string   "name"
@@ -19,6 +19,7 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
     t.integer  "reviews_count",       :default => 0, :null => false
     t.integer  "using_count",         :default => 0, :null => false
     t.integer  "tried_count",         :default => 0, :null => false
+    t.integer  "partners_count",       :default => 0, :null => false
   end
 
   create_table "industries", :force => true do |t|
@@ -53,6 +54,13 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
   create_table "categories", :force => true do |t|
     t.string   "name"
     t.integer  "products_count",       :default => 0, :null => false
+    t.integer  "partners_count",       :default => 0, :null => false
+  end
+  
+  create_table "partners", :force => true do |t|
+    t.string   "name"
+    t.string   "partnerable_type"
+    t.integer  "partnerable_id"
   end
 
 end

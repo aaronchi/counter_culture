@@ -6,6 +6,7 @@ require 'models/product'
 require 'models/review'
 require 'models/user'
 require 'models/category'
+require 'models/partner'
 
 describe "CounterCulture" do
   it "increments counter cache on create" do
@@ -860,6 +861,129 @@ describe "CounterCulture" do
 
     user.using_count.should == 1
     user.tried_count.should == 1
+  end
+  
+  it "increments polymorphic counter cache on create" do
+    company = Company.create
+    category = Category.create
+
+    company.partners_count.should == 0
+    category.partners_count.should == 0
+
+    partner0 = Partner.create :partnerable_type => "Company", :partnerable_id => company.id
+    partner1 = Partner.create :partnerable_type => "Company", :partnerable_id => company.id
+    partner2 = Partner.create :partnerable_type => "Category", :partnerable_id => category.id
+    
+    company.reload
+    category.reload
+
+    company.partners_count.should == 2
+    category.partners_count.should == 1
+  end
+  
+  it "decrements polymorphic counter cache on delete" do
+    company = Company.create
+    category = Category.create
+
+    company.partners_count.should == 0
+    category.partners_count.should == 0
+
+    partner0 = Partner.create :partnerable_type => "Company", :partnerable_id => company.id
+    partner1 = Partner.create :partnerable_type => "Company", :partnerable_id => company.id
+    partner2 = Partner.create :partnerable_type => "Category", :partnerable_id => category.id
+    
+    company.reload
+    category.reload
+
+    company.partners_count.should == 2
+    category.partners_count.should == 1
+    
+    partner1.destroy
+    
+    company.reload
+    category.reload
+    
+    company.partners_count.should == 1
+    category.partners_count.should == 1
+  end
+  
+  it "updates polymorphic counter cache on update" do
+    company0 = Company.create
+    company1 = Company.create
+    category = Category.create
+
+    company0.partners_count.should == 0
+    company1.partners_count.should == 0
+    category.partners_count.should == 0
+
+    partner0 = Partner.create :partnerable_type => "Company", :partnerable_id => company0.id
+    partner1 = Partner.create :partnerable_type => "Company", :partnerable_id => company0.id
+    partner2 = Partner.create :partnerable_type => "Category", :partnerable_id => category.id
+    
+    company0.reload
+    company1.reload
+    category.reload
+
+    company0.partners_count.should == 2
+    company1.partners_count.should == 0
+    category.partners_count.should == 1
+    
+    partner1.partnerable = company1
+    partner1.save!
+    
+    company0.reload
+    company1.reload
+    category.reload
+
+    company0.partners_count.should == 1
+    company1.partners_count.should == 1
+    category.partners_count.should == 1
+
+    # fix this
+    # partner1.partnerable = category
+    # partner1.save!
+    # 
+    # company0.reload
+    # company1.reload
+    # category.reload
+    # 
+    # company0.partners_count.should == 1
+    # company1.partners_count.should == 0
+    # category.partners_count.should == 2
+  end
+  
+  it "should fix a polymorphic counter cache correctly" do
+    company = Company.create
+    category = Category.create
+
+    company.partners_count.should == 0
+    category.partners_count.should == 0
+
+    partner0 = Partner.create :partnerable_type => "Company", :partnerable_id => company.id
+    partner1 = Partner.create :partnerable_type => "Category", :partnerable_id => category.id
+    
+    company.reload
+    category.reload
+
+    company.partners_count.should == 1
+    category.partners_count.should == 1
+
+    company.partners_count = 10
+    category.partners_count = 200
+    company.save!
+    category.save!
+
+    company.reload
+    category.reload
+
+    fixed = Partner.counter_culture_fix_counts :skip_unsupported => true
+    fixed.length.should == 2
+    
+    company.reload
+    category.reload
+
+    company.partners_count.should == 1
+    category.partners_count.should == 1
   end
   
   describe "#previous_model" do
