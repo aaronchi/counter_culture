@@ -12,6 +12,19 @@ module CounterCulture
     module ClassMethods
       # this holds all configuration data
       attr_reader :after_commit_counter_cache
+      
+      def all_polymorphic_types(name)
+        @poly_hash ||= {}.tap do |hash|
+          Dir.glob(File.join(Rails.root, "app", "models", "**", "*.rb")).each do |file|
+            klass = (File.basename(file, ".rb").camelize.constantize rescue nil)
+            next if klass.nil? or !klass.ancestors.include?(::ActiveRecord::Base)
+            klass.reflect_on_all_associations(:has_many).select{|r| r.options[:as] }.each do |reflection|
+              (hash[reflection.options[:as]] ||= []) << klass
+            end
+          end
+        end
+        @poly_hash[name.to_sym]
+      end
 
       # called to configure counter caches
       def counter_culture(relation, options = {})
@@ -59,9 +72,9 @@ module CounterCulture
           next if options[:exclude] && options[:exclude].include?(hash[:relation])
           next if options[:only] && !options[:only].include?(hash[:relation])
           
-          if self.reflect_on_association(hash[:relation][0]).options[:polymorphic]
-            raise "Fixing counter caches is not yet supported for polymorphic associations"
-          end
+          # if self.reflect_on_association(hash[:relation][0]).options[:polymorphic]
+          #   raise "Fixing counter caches is not yet supported for polymorphic associations"
+          # end
 
           if options[:skip_unsupported]
             next if (hash[:foreign_key_values] || (hash[:counter_cache_name].is_a?(Proc) && !hash[:column_names]))
@@ -73,54 +86,107 @@ module CounterCulture
           # if we're provided a custom set of column names with conditions, use them; just use the
           # column name otherwise
           # which class does this relation ultimately point to? that's where we have to start
-          klass = relation_klass(hash[:relation])
+          if self.reflect_on_association(hash[:relation][0]).options[:polymorphic]
+            klass = all_polymorphic_types(hash[:relation][0])
+            
+            klass.each do |kl|
+              # we are only interested in the id and the count of related objects (that's this class itself)
+              query = kl.select("#{kl.table_name}.id, COUNT(#{self.table_name}.id) AS count")
+              query = query.group("#{kl.table_name}.id")
+              # respect the deleted_at column if it exists
+              query = query.where("#{self.table_name}.deleted_at IS NULL") if self.column_names.include?('deleted_at')
 
-          # we are only interested in the id and the count of related objects (that's this class itself)
-          query = klass.select("#{klass.table_name}.id, COUNT(#{self.table_name}.id) AS count")
-          query = query.group("#{klass.table_name}.id")
-          # respect the deleted_at column if it exists
-          query = query.where("#{self.table_name}.deleted_at IS NULL") if self.column_names.include?('deleted_at')
+              column_names = hash[:column_names] || {nil => hash[:counter_cache_name]}
+              raise ":column_names must be a Hash of conditions and column names" unless column_names.is_a?(Hash)
 
-          column_names = hash[:column_names] || {nil => hash[:counter_cache_name]}
-          raise ":column_names must be a Hash of conditions and column names" unless column_names.is_a?(Hash)
+              # iterate over all the possible counter cache column names
+              column_names.each do |where, column_name|
+                # if there are additional conditions, add them here
+                counts = query.where(where)
 
-          # iterate over all the possible counter cache column names
-          column_names.each do |where, column_name|
-            # if there are additional conditions, add them here
-            counts = query.where(where)
+                # we need to work our way back from the end-point of the relation to this class itself;
+                # make a list of arrays pointing to the second-to-last, third-to-last, etc.
+                reverse_relation = []
+                (1..hash[:relation].length).to_a.reverse.each {|i| reverse_relation<< hash[:relation][0,i] }
 
-            # we need to work our way back from the end-point of the relation to this class itself;
-            # make a list of arrays pointing to the second-to-last, third-to-last, etc.
-            reverse_relation = []
-            (1..hash[:relation].length).to_a.reverse.each {|i| reverse_relation<< hash[:relation][0,i] }
+                # we need to join together tables until we get back to the table this class itself
+                # lives in
+                reverse_relation.each do |cur_relation|
+                  counts = counts.joins("JOIN #{self.table_name} ON #{kl.table_name}.id = #{self.table_name}.#{((hash[:relation][0].to_s) + '_id').to_sym} AND #{self.table_name}.#{((hash[:relation][0].to_s) + '_type').to_sym} = '#{kl.name}'")
+                end
+                # and then we collect the counts in an id => count hash
+                counts = counts.inject({}){|memo, model| memo[model.id] = model.count.to_i; memo}
 
-            # we need to join together tables until we get back to the table this class itself
-            # lives in
-            reverse_relation.each do |cur_relation|
-              reflect = relation_reflect(cur_relation)
-              counts = counts.joins("JOIN #{reflect.active_record.table_name} ON #{reflect.table_name}.id = #{reflect.active_record.table_name}.#{reflect.foreign_key}")
+                # now that we know what the correct counts are, we need to iterate over all instances
+                # and check whether the count is correct; if not, we correct it
+                kl.find_each do |model|
+                  if model.read_attribute(column_name) != counts[model.id].to_i
+                    # keep track of what we fixed, e.g. for a notification email
+                    fixed<< {
+                      :entity => kl.name,
+                      :id => model.id,
+                      :what => column_name,
+                      :wrong => model.send(column_name),
+                      :right => counts[model.id]
+                    }
+                    # use update_all because it's faster and because a fixed counter-cache shouldn't
+                    # update the timestamp
+                    kl.update_all "#{column_name} = #{counts[model.id].to_i}", "id = #{model.id}"
+                  end
+                end
+              end
             end
-            # and then we collect the counts in an id => count hash
-            counts = counts.inject({}){|memo, model| memo[model.id] = model.count.to_i; memo}
+          else
+            klass = relation_klass(hash[:relation])
+            
+            # we are only interested in the id and the count of related objects (that's this class itself)
+            query = klass.select("#{klass.table_name}.id, COUNT(#{self.table_name}.id) AS count")
+            query = query.group("#{klass.table_name}.id")
+            # respect the deleted_at column if it exists
+            query = query.where("#{self.table_name}.deleted_at IS NULL") if self.column_names.include?('deleted_at')
 
-            # now that we know what the correct counts are, we need to iterate over all instances
-            # and check whether the count is correct; if not, we correct it
-            klass.find_each do |model|
-              if model.read_attribute(column_name) != counts[model.id].to_i
-                # keep track of what we fixed, e.g. for a notification email
-                fixed<< {
-                  :entity => klass.name,
-                  :id => model.id,
-                  :what => column_name,
-                  :wrong => model.send(column_name),
-                  :right => counts[model.id]
-                }
-                # use update_all because it's faster and because a fixed counter-cache shouldn't
-                # update the timestamp
-                klass.update_all "#{column_name} = #{counts[model.id].to_i}", "id = #{model.id}"
+            column_names = hash[:column_names] || {nil => hash[:counter_cache_name]}
+            raise ":column_names must be a Hash of conditions and column names" unless column_names.is_a?(Hash)
+
+            # iterate over all the possible counter cache column names
+            column_names.each do |where, column_name|
+              # if there are additional conditions, add them here
+              counts = query.where(where)
+
+              # we need to work our way back from the end-point of the relation to this class itself;
+              # make a list of arrays pointing to the second-to-last, third-to-last, etc.
+              reverse_relation = []
+              (1..hash[:relation].length).to_a.reverse.each {|i| reverse_relation<< hash[:relation][0,i] }
+
+              # we need to join together tables until we get back to the table this class itself
+              # lives in
+              reverse_relation.each do |cur_relation|
+                reflect = relation_reflect(cur_relation)
+                counts = counts.joins("JOIN #{reflect.active_record.table_name} ON #{reflect.table_name}.id = #{reflect.active_record.table_name}.#{reflect.foreign_key}")
+              end
+              # and then we collect the counts in an id => count hash
+              counts = counts.inject({}){|memo, model| memo[model.id] = model.count.to_i; memo}
+
+              # now that we know what the correct counts are, we need to iterate over all instances
+              # and check whether the count is correct; if not, we correct it
+              klass.find_each do |model|
+                if model.read_attribute(column_name) != counts[model.id].to_i
+                  # keep track of what we fixed, e.g. for a notification email
+                  fixed<< {
+                    :entity => klass.name,
+                    :id => model.id,
+                    :what => column_name,
+                    :wrong => model.send(column_name),
+                    :right => counts[model.id]
+                  }
+                  # use update_all because it's faster and because a fixed counter-cache shouldn't
+                  # update the timestamp
+                  klass.update_all "#{column_name} = #{counts[model.id].to_i}", "id = #{model.id}"
+                end
               end
             end
           end
+          
         end
 
         return fixed
@@ -197,14 +263,26 @@ module CounterCulture
       self.class.after_commit_counter_cache.each do |hash|
         # figure out whether the applicable counter cache changed (this can happen
         # with dynamic column names)
-        counter_cache_name_was = counter_cache_name_for(previous_model, hash[:counter_cache_name])
-        counter_cache_name = counter_cache_name_for(self, hash[:counter_cache_name])
-
-        if send("#{first_level_relation_foreign_key(hash[:relation])}_changed?") || counter_cache_name != counter_cache_name_was
-          # increment the counter cache of the new value
-          change_counter_cache(hash.merge(:increment => true, :counter_column => counter_cache_name))
-          # decrement the counter cache of the old value
-          change_counter_cache(hash.merge(:increment => false, :was => true, :counter_column => counter_cache_name_was))
+        if self.class.reflect_on_association(hash[:relation][0]).options[:polymorphic]
+          counter_cache_name_was = counter_cache_name_for(previous_model.send(hash[:relation][0]), hash[:counter_cache_name])
+          counter_cache_name = counter_cache_name_for(self.send(hash[:relation][0]), hash[:counter_cache_name])
+                    
+          if send("#{(hash[:relation][0]).to_s}_id_changed?") || counter_cache_name != counter_cache_name_was
+            # increment the counter cache of the new value
+            change_counter_cache(hash.merge(:increment => true, :counter_column => counter_cache_name))
+            # decrement the counter cache of the old value
+            change_counter_cache(hash.merge(:increment => false, :was => true, :counter_column => counter_cache_name_was))
+          end
+        else
+          counter_cache_name_was = counter_cache_name_for(previous_model, hash[:counter_cache_name])
+          counter_cache_name = counter_cache_name_for(self, hash[:counter_cache_name])
+          
+          if send("#{first_level_relation_foreign_key(hash[:relation])}_changed?") || counter_cache_name != counter_cache_name_was
+            # increment the counter cache of the new value
+            change_counter_cache(hash.merge(:increment => true, :counter_column => counter_cache_name))
+            # decrement the counter cache of the old value
+            change_counter_cache(hash.merge(:increment => false, :was => true, :counter_column => counter_cache_name_was))
+          end
         end
       end
     end
@@ -278,8 +356,13 @@ module CounterCulture
       relation = relation.is_a?(Enumerable) ? relation.dup : [relation]
       if was
         first = relation.shift
-        foreign_key_value = send("#{relation_foreign_key(first)}_was")
-        value = relation_klass(first).find(foreign_key_value) if foreign_key_value
+        if self.class.reflect_on_association(first).options[:polymorphic]
+          foreign_key_value = self.send("#{first.to_s}_id_was")
+          value = self.send(first).class.find(foreign_key_value) if foreign_key_value
+        else
+          foreign_key_value = send("#{relation_foreign_key(first)}_was")
+          value = relation_klass(first).find(foreign_key_value) if foreign_key_value
+        end
       else
         value = self
       end
